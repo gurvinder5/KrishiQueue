@@ -1,0 +1,398 @@
+// Prisma Schema for KrishiQueue (SIH26032)
+// Digital Slot Booking & Procurement Queue System for Farmers
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  FARMER
+  CENTER_OPERATOR
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+}
+
+enum CropCategory {
+  CEREALS
+  PULSES
+  OILSEEDS
+  COMMERCIAL
+  HORTICULTURE
+  OTHER
+}
+
+enum SlotStatus {
+  OPEN
+  FULL
+  CANCELLED
+  COMPLETED
+}
+
+enum VehicleType {
+  TRACTOR_TROLLEY
+  TRUCK_SMALL
+  TRUCK_LARGE
+  PICKUP_VAN
+  OTHER
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CHECKED_IN
+  IN_INSPECTION
+  WEIGHED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+  REJECTED
+}
+
+enum TokenStatus {
+  WAITING
+  CALLED
+  AT_GATE
+  IN_QUALITY_CHECK
+  AT_WEIGHBRIDGE
+  UNLOADING
+  COMPLETED
+  SKIPPED
+}
+
+enum QualityGrade {
+  GRADE_A
+  GRADE_B
+  GRADE_C
+  REJECTED
+}
+
+enum PaymentStatus {
+  PENDING_CLEARANCE
+  APPROVED
+  DISBURSED
+  FAILED
+}
+
+enum NotificationType {
+  SLOT_CONFIRMATION
+  QUEUE_CALL
+  TOKEN_ISSUED
+  QUALITY_PASSED
+  QUALITY_REJECTED
+  PAYMENT_DISBURSED
+  SLOT_CANCELLED
+  SYSTEM_ALERT
+}
+
+enum NotificationChannel {
+  IN_APP
+  SMS
+  WHATSAPP
+}
+
+model User {
+  id           String      @id @default(uuid())
+  phone        String      @unique
+  email        String?     @unique
+  name         String
+  passwordHash String
+  role         Role        @default(FARMER)
+  status       UserStatus  @default(ACTIVE)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  farmerProfile       FarmerProfile?
+  operatorAssignments CenterOperator[]
+  procurementRecords  ProcurementRecord[] @relation("OperatorRecords")
+  notifications       Notification[]
+  auditLogs           AuditLog[]
+
+  @@index([phone])
+  @@index([role, status])
+  @@map("users")
+}
+
+model FarmerProfile {
+  id             String   @id @default(uuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  aadhaarHash    String?  @unique
+  farmerIdNumber String?  @unique // e.g. PM-KISAN or State Farmer Registration ID
+  state          String
+  district       String
+  taluk          String?
+  village        String
+  pincode        String
+  bankAccountNo  String?
+  bankIfsc       String?
+  bankName       String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  lands              FarmerLand[]
+  bookings           Booking[]
+  procurementRecords ProcurementRecord[]
+
+  @@index([state, district])
+  @@map("farmer_profiles")
+}
+
+model FarmerLand {
+  id          String   @id @default(uuid())
+  farmerId    String
+  farmer      FarmerProfile @relation(fields: [farmerId], references: [id], onDelete: Cascade)
+  surveyNumber String
+  areaAcres   Float
+  state       String
+  district    String
+  village     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  landCrops   FarmerLandCrop[]
+
+  @@index([farmerId])
+  @@map("farmer_lands")
+}
+
+model FarmerLandCrop {
+  id          String   @id @default(uuid())
+  landId      String
+  land        FarmerLand @relation(fields: [landId], references: [id], onDelete: Cascade)
+  cropId      String
+  crop        Crop       @relation(fields: [cropId], references: [id], onDelete: Restrict)
+  season      String     // e.g. "KHARIF_2026"
+  sownAreaAcres Float
+  estimatedYieldQuintals Float?
+  createdAt   DateTime   @default(now())
+
+  @@index([landId, cropId])
+  @@map("farmer_land_crops")
+}
+
+model ProcurementCenter {
+  id                    String   @id @default(uuid())
+  code                  String   @unique
+  name                  String
+  address               String
+  village               String?
+  taluk                 String?
+  district              String
+  state                 String
+  pincode               String
+  latitude              Float?
+  longitude             Float?
+  dailyCapacityQuintals Decimal  @default(5000) @db.Decimal(12, 2)
+  maxVehiclesPerHour    Int      @default(15)
+  operatingStartTime    String   @default("08:00") // "08:00"
+  operatingEndTime      String   @default("18:00") // "18:00"
+  slotDurationMinutes   Int      @default(60)
+  defaultSlotCapacity   Int      @default(10)
+  isActive              Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  operators             CenterOperator[]
+  acceptedCrops         CenterCrop[]
+  slots                 Slot[]
+  bookings              Booking[]
+  queueTokens           QueueToken[]
+  procurementRecords    ProcurementRecord[]
+
+  @@index([state, district, isActive])
+  @@index([code])
+  @@map("procurement_centers")
+}
+
+model CenterOperator {
+  id        String            @id @default(uuid())
+  userId    String
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  centerId  String
+  center    ProcurementCenter @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  assignedAt DateTime         @default(now())
+
+  @@unique([userId, centerId])
+  @@index([centerId])
+  @@map("center_operators")
+}
+
+model Crop {
+  id                   String       @id @default(uuid())
+  code                 String       @unique
+  name                 String
+  category             CropCategory @default(CEREALS)
+  mspRatePerQuintal    Decimal      @db.Decimal(10, 2)
+  procurementSeason    String       @default("RABI_2026")
+  moistureLimitPercent Decimal      @default(12.0) @db.Decimal(4, 2)
+  foreignMatterLimit   Decimal      @default(1.0) @db.Decimal(4, 2)
+  isActive             Boolean      @default(true)
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  centerCrops          CenterCrop[]
+  farmerLandCrops      FarmerLandCrop[]
+  bookings             Booking[]
+  procurementRecords   ProcurementRecord[]
+
+  @@index([category, isActive])
+  @@map("crops")
+}
+
+model CenterCrop {
+  id        String            @id @default(uuid())
+  centerId  String
+  center    ProcurementCenter @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  cropId    String
+  crop      Crop              @relation(fields: [cropId], references: [id], onDelete: Cascade)
+  isActive  Boolean           @default(true)
+
+  @@unique([centerId, cropId])
+  @@index([centerId])
+  @@map("center_crops")
+}
+
+model Slot {
+  id          String     @id @default(uuid())
+  centerId    String
+  center      ProcurementCenter @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  date        String     // Format: "YYYY-MM-DD"
+  startTime   String     // Format: "HH:mm" e.g. "09:00"
+  endTime     String     // Format: "HH:mm" e.g. "10:00"
+  capacity    Int        @default(10)
+  bookedCount Int        @default(0)
+  status      SlotStatus @default(OPEN)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  bookings    Booking[]
+
+  @@unique([centerId, date, startTime])
+  @@index([centerId, date, status])
+  @@map("slots")
+}
+
+model Booking {
+  id                       String        @id @default(uuid())
+  bookingReference         String        @unique // e.g. "BK-20261015-0042"
+  farmerId                 String
+  farmer                   FarmerProfile @relation(fields: [farmerId], references: [id], onDelete: Restrict)
+  centerId                 String
+  center                   ProcurementCenter @relation(fields: [centerId], references: [id], onDelete: Restrict)
+  slotId                   String
+  slot                     Slot          @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  cropId                   String
+  crop                     Crop          @relation(fields: [cropId], references: [id], onDelete: Restrict)
+  estimatedQuantityQuintals Decimal       @db.Decimal(8, 2)
+  vehicleType              VehicleType   @default(TRACTOR_TROLLEY)
+  vehicleNumber            String
+  driverName               String?
+  driverPhone              String?
+  status                   BookingStatus @default(CONFIRMED)
+  cancellationReason       String?
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
+
+  queueToken               QueueToken?
+  procurementRecord        ProcurementRecord?
+
+  @@index([farmerId, status])
+  @@index([centerId, slotId, status])
+  @@index([bookingReference])
+  @@map("bookings")
+}
+
+model QueueToken {
+  id                String      @id @default(uuid())
+  bookingId         String      @unique
+  booking           Booking     @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  centerId          String
+  center            ProcurementCenter @relation(fields: [centerId], references: [id], onDelete: Restrict)
+  tokenDate         String      // Format: "YYYY-MM-DD"
+  tokenNumber       Int         // Sequential counter per center per day: 1, 2, 3...
+  tokenDisplay      String      // Format: "TK-001" or "KQ-LUD-042"
+  status            TokenStatus @default(WAITING)
+  counterNumber     String?     // e.g. "Gate-1", "Weighbridge-2"
+  estimatedCallTime DateTime?
+  actualCallTime    DateTime?
+  completedTime     DateTime?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  @@unique([centerId, tokenDate, tokenNumber])
+  @@index([centerId, tokenDate, status])
+  @@map("queue_tokens")
+}
+
+model ProcurementRecord {
+  id                   String        @id @default(uuid())
+  receiptNumber        String        @unique // e.g. "RCP-2026-00042"
+  bookingId            String        @unique
+  booking              Booking       @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  centerId             String
+  center               ProcurementCenter @relation(fields: [centerId], references: [id], onDelete: Restrict)
+  farmerId             String
+  farmer               FarmerProfile @relation(fields: [farmerId], references: [id], onDelete: Restrict)
+  cropId               String
+  crop                 Crop          @relation(fields: [cropId], references: [id], onDelete: Restrict)
+  operatorId           String
+  operator             User          @relation("OperatorRecords", fields: [operatorId], references: [id], onDelete: Restrict)
+  grossWeightKg        Decimal       @db.Decimal(10, 2)
+  tareWeightKg         Decimal       @db.Decimal(10, 2)
+  netWeightKg          Decimal       @db.Decimal(10, 2)
+  moisturePercent      Decimal       @db.Decimal(4, 2)
+  foreignMatterPercent Decimal       @db.Decimal(4, 2)
+  qualityGrade         QualityGrade  @default(GRADE_A)
+  ratePerQuintal       Decimal       @db.Decimal(10, 2)
+  totalAmount          Decimal       @db.Decimal(12, 2)
+  paymentStatus        PaymentStatus @default(PENDING_CLEARANCE)
+  paymentReference     String?
+  notes                String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  @@index([centerId, createdAt])
+  @@index([farmerId])
+  @@index([receiptNumber])
+  @@map("procurement_records")
+}
+
+model Notification {
+  id        String              @id @default(uuid())
+  userId    String
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  type      NotificationType    @default(SYSTEM_ALERT)
+  isRead    Boolean             @default(false)
+  channel   NotificationChannel @default(IN_APP)
+  createdAt DateTime            @default(now())
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String
+  ipAddress  String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([userId, createdAt])
+  @@map("audit_logs")
+}
